@@ -99,7 +99,7 @@ def download_document(context: Context, folder_path: str, file: File, ignore_exi
 
         logger.info(f"Document saved to {filepath}")
         return filepath
-    except requests.exceptions.RequestException as e:
+    except requests.exceptions.RequestException | IOError as e:
         logger.error(f"Error downloading document: {e}")
         return None
 
@@ -234,11 +234,9 @@ def getOrCreateFolder(context: Context, destination_folder: str, folder: Folder,
             try:
                 download_document(context, folder_path, child, ignore_existing)
             except requests.exceptions.HTTPError as e:
-                logger.error(f"Error downloading {child.name}")
-                logger.error(e)
+                logger.error(f"Error downloading {child.name}", e)
             except OSError as e:
-                logger.error(f"Error folder not created {folder_path} ")
-                logger.error(e)
+                logger.error(f"Error folder not created {folder_path} ", e)
         else:
             logger.warning(f"Unknown type {child.type}")
 

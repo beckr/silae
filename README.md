@@ -64,12 +64,9 @@ python src/silae/main.py -d /tmp
 
 ## Docker
 
-1. Build the image
-```bash
-docker build -t silae:latest .
-```
+[Dockerhub image](https://hub.docker.com/r/rphbck/silae-downloader)
 
-2. Run 
+1. Run 
 ```bash
 docker run --rm \
  -v /Users/me/downloads:/app/silae/downloads \
@@ -77,7 +74,7 @@ docker run --rm \
  -e LOG_FILE_PATH=/app/silae/downloads/downloader.log \
  -e LOGIN=user@email.fr \
  -e PASSWORD=Password \
- silae:latest
+ rphbck/silae-downloader:latest
 ```
 
 
