@@ -1,0 +1,11 @@
+[project]
+name = "silae"
+version = "0.1.0"
+description = "Extract data from silae"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "autopep8>=2.3.2",
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.5",
+]

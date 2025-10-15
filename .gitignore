@@ -1,0 +1,11 @@
+secrets.env
+venv
+downloads
+downloads/*
+**/__pycache__/*
+.vscode
+__pycache__
+.venv
+edocperso_downloader.log
+bin
+bin/*
