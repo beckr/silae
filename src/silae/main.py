@@ -20,7 +20,7 @@ rotating_handler = RotatingFileHandler(
 )
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         rotating_handler,
@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 URL_GET_CONTENT = "https://v2-app.edocperso.fr/edocPerso/V1/edpDoc/getContent"
-URL_AUTHENTICATION = 'https://edocperso.fr/index.php?api=Authenticate&a=doAuthentication'
+URL_AUTHENTICATION = 'https://edocperso.fr/edp-back/api/v1/login'
 URL_GET_FOLDERS_AND_FILES = "https://v2-app.edocperso.fr/edocPerso/V1/edpUser/getFoldersAndFiles"
 
 
@@ -125,11 +125,11 @@ def main(destination_folder: str, ignore_existing: bool = False):
 
     headers = {
         'Accept': 'application/json',
-        'Content-Type': 'application/json;charset=utf-8',
+        'Content-Type': 'application/json',
     }
 
     data = {
-        'login': login,
+        'email': login,
         'password': password
     }
 
@@ -139,17 +139,12 @@ def main(destination_folder: str, ignore_existing: bool = False):
 
     response_data = response.json()
 
-    if response_data["status"] == "error":
-        logger.error(
-            f"Error in response: {response_data["content"]}", response)
-        exit(1)
-
     logger.info("Authenticated")
 
     logger.debug(f"Response for URL_AUTHENTICATION : {response_data}")
 
     # Extract login url
-    login_url = response_data['content']['loginUrl']
+    login_url = response_data['loginUrl']
     logger.debug(f"URL de connexion: {login_url}")
 
     # Extract JWT token from login URL
