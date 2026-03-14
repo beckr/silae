@@ -78,6 +78,7 @@ class Response:
         data['content'] = content
         return cls(**data)
 
+
 @dataclass
 class Context:
     token: Optional[str] = None
