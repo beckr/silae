@@ -1,13 +1,13 @@
 import argparse
 import os
 import logging
-from typing import List, Optional
+from typing import Optional
 
 import requests
 from dotenv import load_dotenv
 
-from models import Context, File, Folder, Response
-from utils import clean_filename, convert_keys_to_snake_case
+from models import Context, File
+from utils import clean_filename
 
 # Configure logging with rotation
 from logging.handlers import RotatingFileHandler
@@ -20,7 +20,7 @@ rotating_handler = RotatingFileHandler(
 )
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", logging.INFO),
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         rotating_handler,
@@ -30,28 +30,11 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-URL_GET_CONTENT = "https://v2-app.edocperso.fr/edocPerso/V1/edpDoc/getContent"
-URL_AUTHENTICATION = 'https://edocperso.fr/edp-back/api/v1/login'
-URL_GET_FOLDERS_AND_FILES = "https://v2-app.edocperso.fr/edocPerso/V1/edpUser/getFoldersAndFiles"
+URL_POST_AUTHENTICATION = 'https://edocperso.fr/edp-back/api/v1/login'
+URL_GET_FOLDERS = 'https://edocperso.fr/edp-back/api/v1/folders'
+URL_POST_DOCUMENTS = 'https://edocperso.fr/edp-back/api/v1/documents'
+URL_POST_DOWNLOAD = 'https://edocperso.fr/edp-back/api/v1/documents/download'
 
-
-def map_json_to_classes(json_data: str) -> List[Folder]:
-    """
-    Convert JSON data to Folder objects.
-
-    Args:
-        json_data: JSON string containing folder and file information
-
-    Returns:
-        List of Folder objects if successful, empty list otherwise
-    """
-    json_data = convert_keys_to_snake_case(json_data)
-    if json_data["status"] == "success":
-        response = Response.from_dict(json_data)
-        return response.content
-    else:
-        logger.error(f"Error of API response: {json_data['status']}")
-        return []
 
 def download_document(context: Context, folder_path: str, file: File, ignore_existing: bool) -> Optional[str]:
     """
@@ -75,22 +58,28 @@ def download_document(context: Context, folder_path: str, file: File, ignore_exi
 
     headers = {
         'Accept': 'application/octet-stream',
-        'Content-Type': 'application/json;charset=utf-8'
+        'Content-Type': 'application/json',
+        'Authorization': f"Bearer {context.token}"
     }
+
+    logger.debug(f"download_document headers={headers}")
+
     data = {
-        "sessionId": context.token,
-        "documentId": file.id
+        "documentIds": [f"{file.id}"],
+        "folderIds": []
     }
+
+    logger.debug(f"download_document data={data}")
 
     try:
         filename = clean_filename(file.name)
-        filepath = os.path.join(folder_path, f"{filename}.{file.extension}")
+        filepath = os.path.join(folder_path, f"{filename}{file.extension}")
 
         if ignore_existing and os.path.exists(filepath):
             logger.info(f"Ignore existing file {filepath}")
             return filepath
 
-        response = requests.post(URL_GET_CONTENT, headers=headers,
+        response = requests.post(URL_POST_DOWNLOAD, headers=headers,
                                  json=data, cookies=context.cookies)
         response.raise_for_status()  # Raise an error for bad status codes
 
@@ -99,9 +88,10 @@ def download_document(context: Context, folder_path: str, file: File, ignore_exi
 
         logger.info(f"Document saved to {filepath}")
         return filepath
-    except requests.exceptions.RequestException | IOError as e:
+    except Exception as e:
         logger.error(f"Error downloading document: {e}")
         return None
+
 
 def main(destination_folder: str, ignore_existing: bool = False):
     """
@@ -111,6 +101,7 @@ def main(destination_folder: str, ignore_existing: bool = False):
         destination_folder: Path to the folder where files should be saved
         ignore_existing: If True, skip downloading files that already exist
     """
+    logger.info("-"*80)
     # Load secrets from .env file
     load_dotenv('secrets.env')
 
@@ -134,106 +125,137 @@ def main(destination_folder: str, ignore_existing: bool = False):
     }
 
     # Authenticate
-    response = requests.post(URL_AUTHENTICATION, headers=headers, json=data)
+    response = requests.post(URL_POST_AUTHENTICATION,
+                             headers=headers, json=data)
     response.raise_for_status()
 
     response_data = response.json()
 
-    logger.info("Authenticated")
+    token = "EMPTY"
 
-    logger.debug(f"Response for URL_AUTHENTICATION : {response_data}")
+    try:
+        # Extract token
+        token = response_data["token"]
 
-    # Extract login url
-    login_url = response_data['loginUrl']
-    logger.debug(f"URL de connexion: {login_url}")
+        logger.info("Authenticated")
 
-    # Extract JWT token from login URL
-    token = login_url.split('/')[-1]
-    logger.debug(f"Token JWT: {token}")
+        logger.debug(f"Response for URL_AUTHENTICATION : {response_data}")
+    except Exception as e:
+        logger.error(f"Error extracting token: {e}")
 
     # Extract cookies from the response
     cookies = response.cookies
 
-    # Get on login (server state)
-    login_response = requests.get(login_url, cookies=cookies)
-
-    login_response.raise_for_status()
-
-    logger.debug("Login ok")
-
-    # En-têtes de la requête
+    # Request headers
     headers = {
         'Accept': 'application/json',
         'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Content-Type': 'application/json;charset=utf-8',
+        'Authorization': f"Bearer {token}"
     }
 
-    # Données de la requête
-    data = {
-        'sessionId': token
-    }
+    # Get initial folder structure using new API
+    folders_response = requests.get(
+        URL_GET_FOLDERS, headers=headers, cookies=cookies)
+
+    folders_response.raise_for_status()
+
+    logger.info("Got folders list")
+
+    folders_data = folders_response.json()
+
+    logger.debug(f"Get folder response: {folders_data}")
 
     context = Context(token=token, cookies=cookies)
 
-    # Get the folder and files list
-    folders_files_response = requests.post(
-        URL_GET_FOLDERS_AND_FILES, headers=headers, json=data, cookies=cookies)
+    # Build folder hierarchy from response
+    folders_dict = {}
+    if 'folders' in folders_data:
+        for folder_info in folders_data['folders']:
+            folders_dict[folder_info['id']] = folder_info
 
-    folders_files_response.raise_for_status()
+    # Find root folders (those with no parentId)
+    root_folders = [f for f in folders_data.get(
+        'folders', []) if f.get('parentId') is None]
 
-    logger.info("Got files list")
+    # Process all folders recursively starting from root folders
+    for root_folder in root_folders:
+        process_folder_recursive(
+            context, destination_folder, headers, cookies,
+            folders_dict, root_folder, ignore_existing)
 
-    mapped_data = map_json_to_classes(
-        folders_files_response.json())
 
-    logger.debug("Gathered files and folders %s", mapped_data)
-
-    for content in mapped_data:
-        getOrCreateFolderStructure(
-            context, destination_folder, content, ignore_existing)
-
-def getOrCreateFolderStructure(context: Context, destination_folder: str, content: Folder, ignore_existing: bool = False) -> None:
+def process_folder_recursive(
+    context: Context,
+    destination_folder: str,
+    headers: dict,
+    cookies,
+    folders_dict: dict,
+    folder_info: dict,
+    ignore_existing: bool
+) -> None:
     """
-    Process a folder structure and create/download its contents.
+    Process a folder and its children recursively.
 
     Args:
         context: Authentication context
         destination_folder: Base folder path for downloads
-        content: Folder object to process
+        headers: HTTP headers for API requests
+        cookies: Authentication cookies
+        folders_dict: Dictionary of all folders by ID
+        folder_info: Current folder information
         ignore_existing: If True, skip existing files
     """
-    if content is not None:
-        getOrCreateFolder(context, destination_folder,
-                          content, ignore_existing)
-    else:
-        logger.warning("No content")
+    folder_id = folder_info.get('id')
+    folder_name = folder_info.get('name', 'Unknown')
+    logger.info(f"Processing folder: {folder_name} ({folder_id})")
 
-def getOrCreateFolder(context: Context, destination_folder: str, folder: Folder, ignore_existing: bool) -> None:
-    """
-    Create a folder and process its contents recursively.
+    # Get documents for this folder
+    documents_data = {
+        'paging': {'limit': 1000, 'offset': 0},
+        'folderId': folder_id
+    }
 
-    Args:
-        context: Authentication context
-        destination_folder: Parent folder path
-        folder: Folder object to process
-        ignore_existing: If True, skip existing files
-    """
-    folder_path = os.path.join(destination_folder, folder.name)
-    logger.info(f"Creating or getting {folder_path}")
+    documents_response = requests.post(
+        URL_POST_DOCUMENTS, headers=headers, json=documents_data, cookies=cookies)
+
+    documents_response.raise_for_status()
+
+    documents_json = documents_response.json()
+
+    logger.debug(f"Get (POST) documents response: {documents_json}")
+
+    # Create the folder on disk
+    folder_path = os.path.join(destination_folder, folder_name)
     os.makedirs(folder_path, exist_ok=True)
-    for child in folder.children:
-        if child.type == "folder":
-            getOrCreateFolder(context, folder_path, child, ignore_existing)
-        elif child.type == "file":
-            logger.info(f"Downloading file {child.name}")
-            try:
-                download_document(context, folder_path, child, ignore_existing)
-            except requests.exceptions.HTTPError as e:
-                logger.error(f"Error downloading {child.name}", e)
-            except OSError as e:
-                logger.error(f"Error folder not created {folder_path} ", e)
-        else:
-            logger.warning(f"Unknown type {child.type}")
+
+    if 'items' in documents_json:
+        for doc in documents_json['items']:
+            # Create File object from document
+            file = File(
+                id=doc.get('id'),
+                name=doc.get('title'),
+                folder_id=doc.get('folderId'),
+                extension=doc.get('fileExtension')
+            )
+            logger.debug(f"Getting document {doc}")
+            # Download the file
+            download_document(context, folder_path, file, ignore_existing)
+
+    # Process child folders recursively
+    children_ids = folder_info.get('children', [])
+    logger.debug(f"children_ids={children_ids}")
+    for child_id in children_ids:
+        logger.debug(f"child_id={child_id}")
+        logger.debug(
+            f"{child_id} in {folders_dict}? {child_id in folders_dict}")
+        if child_id in folders_dict:
+            child_folder = folders_dict[child_id]
+            logger.debug(f"child_folder={child_id}")
+            process_folder_recursive(
+                context, folder_path, headers, cookies,
+                folders_dict, child_folder, ignore_existing)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
